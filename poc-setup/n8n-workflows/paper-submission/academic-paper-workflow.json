@@ -1,0 +1,160 @@
+{
+  "name": "Academic Paper Submission Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "submit-paper",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Paper Submission Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate paper submission data\nconst requiredFields = ['title', 'author_ens', 'content'];\nconst missingFields = [];\n\nfor (const field of requiredFields) {\n  if (!items[0].json[field]) {\n    missingFields.push(field);\n  }\n}\n\nif (missingFields.length > 0) {\n  throw new Error(`Missing required fields: ${missingFields.join(', ')}`);\n}\n\n// Add submission timestamp\nitems[0].json.submitted_at = new Date().toISOString();\nitems[0].json.status = 'processing';\n\nreturn items;"
+      },
+      "name": "Validate Submission",
+      "type": "n8n-nodes-base.function",
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.pinata.cloud/pinning/pinJSONToIPFS",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "pinata_api_key",
+              "value": "={{$env.PINATA_API_KEY}}"
+            },
+            {
+              "name": "pinata_secret_api_key", 
+              "value": "={{$env.PINATA_SECRET_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pinataContent",
+              "value": "={{$json}}"
+            },
+            {
+              "name": "pinataMetadata",
+              "value": "={\"name\": \"{{$json.title}}\", \"keyvalues\": {\"author\": \"{{$json.author_ens}}\", \"type\": \"academic_paper\"}}"
+            }
+          ]
+        }
+      },
+      "name": "Upload to IPFS",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://fraud-detection-api:5000/analyze",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{$json.content}}"
+            },
+            {
+              "name": "metadata",
+              "value": "={\"title\": \"{{$json.title}}\", \"author\": \"{{$json.author_ens}}\"}"
+            }
+          ]
+        }
+      },
+      "name": "Fraud Detection",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "academic_papers",
+        "columns": "title, author_ens, abstract, content_ipfs, keywords, fraud_score, status",
+        "additionalFields": {
+          "mode": "raw",
+          "queryRaw": "INSERT INTO academic_papers (title, author_ens, abstract, content_ipfs, keywords, fraud_score, status) VALUES ('{{$json.title}}', '{{$json.author_ens}}', '{{$json.abstract}}', '{{$json.IpfsHash}}', ARRAY[{{$json.keywords}}], {{$json.fraud_score}}, 'submitted') RETURNING id"
+        }
+      },
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"success\": true, \"paper_id\": {{$json.id}}, \"ipfs_hash\": \"{{$json.IpfsHash}}\", \"fraud_score\": {{$json.fraud_score}}, \"message\": \"Paper submitted successfully\"}"
+      },
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Paper Submission Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Submission": {
+      "main": [
+        [
+          {
+            "node": "Upload to IPFS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to IPFS": {
+      "main": [
+        [
+          {
+            "node": "Fraud Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fraud Detection": {
+      "main": [
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
