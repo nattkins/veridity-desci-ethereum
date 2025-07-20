@@ -32,8 +32,8 @@ Ideal for long-term institutional deployment.
 
 ### ✅ What We Have
 - Complete technical specifications and pseudocode for BOTH approaches
-- University partnerships (Cardiff & Imperial) 
-- Grant applications submitted ($60,000 Ethereum Foundation)
+- 2 University partnerships - more to follow
+- 1 Grant applications submitted - more to follow
 - Fraud detection algorithms designed (Francesca Gino case study)
 - Economic model validated ($2.50 → $10B scaling path)
 - No-code workflow specifications for rapid deployment
