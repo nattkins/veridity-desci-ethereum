@@ -1,0 +1,356 @@
+// VeridityCore.test.pseudo - Comprehensive test suite for core contract
+DESCRIBE "VeridityCore Contract Tests" {
+    
+    SETUP {
+        veridity = deploy VeridityCore();
+        ensRegistry = deploy MockENSRegistry();
+        fraudDetector = deploy FraudDetection();
+        usdcPayments = deploy USDCPayments();
+        
+        // Setup test accounts
+        author = accounts[1];
+        reviewer1 = accounts[2];
+        reviewer2 = accounts[3];
+        editor = accounts[4];
+        
+        // Grant roles
+        veridity.grantRole(EDITOR_ROLE, editor);
+    }
+    
+    DESCRIBE "Paper Submission" {
+        
+        TEST "should successfully submit valid paper" {
+            GIVEN {
+                validENS = "researcher.eth";
+                validIPFS = "QmValidPaperHash123";
+                ensRegistry.setOwner(validENS, author);
+                fraudDetector.setMockFraudScore(validIPFS, 15); // Below threshold
+            }
+            
+            WHEN {
+                result = veridity.submitPaper(validENS, validIPFS, {from: author});
+            }
+            
+            THEN {
+                assert result.success == true;
+                assert veridity.papers(result.paperId).author == author;
+                assert veridity.papers(result.paperId).status == PaperStatus.SUBMITTED;
+                assert event PaperSubmitted emitted;
+            }
+        }
+        
+        TEST "should reject paper with high fraud score" {
+            GIVEN {
+                validENS = "researcher.eth";
+                suspiciousIPFS = "QmSuspiciousPaperHash456";
+                ensRegistry.setOwner(validENS, author);
+                fraudDetector.setMockFraudScore(suspiciousIPFS, 85); // Above threshold
+            }
+            
+            WHEN {
+                result = veridity.submitPaper(validENS, suspiciousIPFS, {from: author});
+            }
+            
+            THEN {
+                assert result.reverted == true;
+                assert result.revertReason == "Fraud score exceeds threshold";
+            }
+        }
+        
+        TEST "should reject submission from non-ENS owner" {
+            GIVEN {
+                invalidENS = "notowner.eth";
+                validIPFS = "QmValidPaperHash123";
+                ensRegistry.setOwner(invalidENS, accounts[9]); // Different owner
+            }
+            
+            WHEN {
+                result = veridity.submitPaper(invalidENS, validIPFS, {from: author});
+            }
+            
+            THEN {
+                assert result.reverted == true;
+                assert result.revertReason == "ENS ownership verification failed";
+            }
+        }
+    }
+    
+    DESCRIBE "Peer Review Process" {
+        
+        SETUP {
+            // Submit a paper first
+            paperId = submitTestPaper(author, "researcher.eth", "QmTestPaper123");
+            
+            // Register reviewers
+            veridity.registerReviewer("reviewer1.eth", ["computer science", "AI"], {from: reviewer1});
+            veridity.registerReviewer("reviewer2.eth", ["computer science", "ML"], {from: reviewer2});
+        }
+        
+        TEST "should assign reviewers and escrow payments" {
+            GIVEN {
+                reviewers = [reviewer1, reviewer2];
+                initialUSDCBalance1 = usdcPayments.escrowBalance(reviewer1);
+                initialUSDCBalance2 = usdcPayments.escrowBalance(reviewer2);
+            }
+            
+            WHEN {
+                result = veridity.assignReviewers(paperId, reviewers, {from: editor});
+            }
+            
+            THEN {
+                assert veridity.papers(paperId).status == PaperStatus.UNDER_REVIEW;
+                assert usdcPayments.escrowBalance(reviewer1) == initialUSDCBalance1 + REVIEW_PAYMENT_AMOUNT;
+                assert usdcPayments.escrowBalance(reviewer2) == initialUSDCBalance2 + REVIEW_PAYMENT_AMOUNT;
+                assert event ReviewersAssigned emitted;
+            }
+        }
+        
+        TEST "should complete review and release payment" {
+            GIVEN {
+                veridity.assignReviewers(paperId, [reviewer1], {from: editor});
+                initialBalance = usdcPayments.balance(reviewer1);
+                escrowBalance = usdcPayments.escrowBalance(reviewer1);
+            }
+            
+            WHEN {
+                result = veridity.submitReview(paperId, 8, "Excellent work", true, {from: reviewer1});
+            }
+            
+            THEN {
+                assert result.success == true;
+                assert veridity.paperReviews(paperId).length == 1;
+                assert veridity.reputationScores(reviewer1) > 0;
+                assert usdcPayments.balance(reviewer1) == initialBalance + escrowBalance;
+                assert usdcPayments.escrowBalance(reviewer1) == 0;
+                assert event ReviewSubmitted emitted;
+            }
+        }
+        
+        TEST "should finalize paper after all reviews" {
+            GIVEN {
+                veridity.assignReviewers(paperId, [reviewer1, reviewer2], {from: editor});
+            }
+            
+            WHEN {
+                veridity.submitReview(paperId, 8, "Good work", true, {from: reviewer1});
+                veridity.submitReview(paperId, 9, "Excellent", true, {from: reviewer2});
+            }
+            
+            THEN {
+                assert veridity.papers(paperId).status == PaperStatus.ACCEPTED;
+                assert event PaperFinalized emitted;
+                // Author should receive bonus payment
+                assert usdcPayments.balance(author) == AUTHOR_BONUS_AMOUNT;
+            }
+        }
+        
+        TEST "should reject paper with poor reviews" {
+            GIVEN {
+                veridity.assignReviewers(paperId, [reviewer1, reviewer2], {from: editor});
+            }
+            
+            WHEN {
+                veridity.submitReview(paperId, 3, "Poor quality", false, {from: reviewer1});
+                veridity.submitReview(paperId, 4, "Needs improvement", false, {from: reviewer2});
+            }
+            
+            THEN {
+                assert veridity.papers(paperId).status == PaperStatus.REJECTED;
+                assert event PaperFinalized emitted;
+                // Author should not receive bonus
+                assert usdcPayments.balance(author) == 0;
+            }
+        }
+    }
+    
+    DESCRIBE "Fraud Detection Integration" {
+        
+        TEST "should detect Francesca Gino style fraud" {
+            GIVEN {
+                fraudulentPaper = createGinoStyleFraudPaper(); // Helper function
+                ensRegistry.setOwner("fraudster.eth", author);
+            }
+            
+            WHEN {
+                result = veridity.submitPaper("fraudster.eth", fraudulentPaper.ipfsHash, {from: author});
+            }
+            
+            THEN {
+                assert result.reverted == true;
+                assert fraudDetector.getFraudScore(fraudulentPaper.ipfsHash) > FRAUD_THRESHOLD;
+            }
+        }
+        
+        TEST "should allow legitimate papers with low fraud scores" {
+            GIVEN {
+                legitimatePaper = createLegitimateResearchPaper(); // Helper function  
+                ensRegistry.setOwner("researcher.eth", author);
+            }
+            
+            WHEN {
+                result = veridity.submitPaper("researcher.eth", legitimatePaper.ipfsHash, {from: author});
+            }
+            
+            THEN {
+                assert result.success == true;
+                assert fraudDetector.getFraudScore(legitimatePaper.ipfsHash) < FRAUD_THRESHOLD;
+            }
+        }
+    }
+    
+    DESCRIBE "EAS Integration" {
+        
+        TEST "should create paper attestation on submission" {
+            GIVEN {
+                validENS = "researcher.eth";
+                validIPFS = "QmValidPaper123";
+                ensRegistry.setOwner(validENS, author);
+            }
+            
+            WHEN {
+                result = veridity.submitPaper(validENS, validIPFS, {from: author});
+            }
+            
+            THEN {
+                attestation = easAttestation.getAttestation(result.paperId);
+                assert attestation.schema == PAPER_SCHEMA_UID;
+                assert attestation.attester == address(veridity);
+                assert attestation.recipient == author;
+            }
+        }
+        
+        TEST "should create review attestations" {
+            GIVEN {
+                setupCompletePaperAndReview(); // Helper function
+            }
+            
+            WHEN {
+                result = veridity.submitReview(paperId, 8, "Good work", true, {from: reviewer1});
+            }
+            
+            THEN {
+                attestation = easAttestation.getAttestation(result.reviewId);
+                assert attestation.schema == REVIEW_SCHEMA_UID;
+                assert attestation.attester == address(veridity);
+                assert attestation.recipient == reviewer1;
+            }
+        }
+    }
+    
+    DESCRIBE "Access Control" {
+        
+        TEST "should only allow editors to assign reviewers" {
+            GIVEN {
+                paperId = submitTestPaper(author, "researcher.eth", "QmTestPaper123");
+                nonEditor = accounts[5];
+            }
+            
+            WHEN {
+                result = veridity.assignReviewers(paperId, [reviewer1], {from: nonEditor});
+            }
+            
+            THEN {
+                assert result.reverted == true;
+                assert result.revertReason contains "AccessControl";
+            }
+        }
+        
+        TEST "should only allow registered reviewers to submit reviews" {
+            GIVEN {
+                paperId = submitTestPaper(author, "researcher.eth", "QmTestPaper123");
+                veridity.assignReviewers(paperId, [reviewer1], {from: editor});
+                unregisteredReviewer = accounts[6];
+            }
+            
+            WHEN {
+                result = veridity.submitReview(paperId, 8, "Review", true, {from: unregisteredReviewer});
+            }
+            
+            THEN {
+                assert result.reverted == true;
+                assert result.revertReason == "Reviewer not active";
+            }
+        }
+    }
+    
+    DESCRIBE "Economic Model" {
+        
+        TEST "should maintain correct USDC balances throughout workflow" {
+            GIVEN {
+                initialSystemBalance = usdcPayments.systemBalance();
+                paperId = submitTestPaper(author, "researcher.eth", "QmTestPaper123");
+            }
+            
+            WHEN {
+                veridity.assignReviewers(paperId, [reviewer1, reviewer2], {from: editor});
+                veridity.submitReview(paperId, 8, "Good", true, {from: reviewer1});
+                veridity.submitReview(paperId, 9, "Excellent", true, {from: reviewer2});
+            }
+            
+            THEN {
+                finalSystemBalance = usdcPayments.systemBalance();
+                totalPayments = (REVIEW_PAYMENT_AMOUNT * 2) + AUTHOR_BONUS_AMOUNT;
+                assert finalSystemBalance == initialSystemBalance - totalPayments;
+                assert usdcPayments.balance(reviewer1) == REVIEW_PAYMENT_AMOUNT;
+                assert usdcPayments.balance(reviewer2) == REVIEW_PAYMENT_AMOUNT;
+                assert usdcPayments.balance(author) == AUTHOR_BONUS_AMOUNT;
+            }
+        }
+    }
+    
+    DESCRIBE "Gas Optimization" {
+        
+        TEST "should batch multiple operations efficiently" {
+            GIVEN {
+                multiplePapers = createMultiplePapers(10); // Helper function
+            }
+            
+            WHEN {
+                gasUsed = measureGasUsage(() => {
+                    veridity.batchProcessPapers(multiplePapers);
+                });
+            }
+            
+            THEN {
+                assert gasUsed < INDIVIDUAL_OPERATIONS_GAS * 10 * 0.7; // 30% savings expected
+            }
+        }
+    }
+    
+    HELPER_FUNCTIONS {
+        
+        FUNCTION submitTestPaper(author, ensName, ipfsHash) returns (bytes32) {
+            ensRegistry.setOwner(ensName, author);
+            fraudDetector.setMockFraudScore(ipfsHash, 15);
+            result = veridity.submitPaper(ensName, ipfsHash, {from: author});
+            RETURN result.paperId;
+        }
+        
+        FUNCTION createGinoStyleFraudPaper() returns (TestPaper) {
+            // Creates paper with statistical inconsistencies like Francesca Gino case
+            RETURN TestPaper({
+                ipfsHash: "QmFraudulentPaper789",
+                quantitativeData: {
+                    correlation: 0.87, // Suspiciously exact
+                    pValue: 0.001,     // Too perfect
+                    sampleSize: 45     // Small sample
+                },
+                qualitativeText: "Results showed no significant relationship between variables",
+                expectedFraudScore: 85
+            });
+        }
+        
+        FUNCTION createLegitimateResearchPaper() returns (TestPaper) {
+            RETURN TestPaper({
+                ipfsHash: "QmLegitimateResearch456",
+                quantitativeData: {
+                    correlation: 0.23,
+                    pValue: 0.14,
+                    sampleSize: 200
+                },
+                qualitativeText: "Results indicated a weak, non-significant correlation",
+                expectedFraudScore: 12
+            });
+        }
+    }
+}

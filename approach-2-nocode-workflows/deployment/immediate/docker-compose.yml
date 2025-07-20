@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: veridity
+      POSTGRES_USER: veridity
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+
+  nocodb:
+    image: nocodb/nocodb:latest
+    environment:
+      NC_DB: "pg://postgres:5432?u=veridity&p=secure_password&d=veridity"
+      NC_AUTH_JWT_SECRET: "veridity-jwt-secret"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    volumes:
+      - ./nocodb-config:/usr/app/data
+
+  n8n:
+    image: n8nio/n8n:latest
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_DATABASE: veridity
+      DB_POSTGRESDB_USER: veridity
+      DB_POSTGRESDB_PASSWORD: secure_password
+      N8N_ENCRYPTION_KEY: "veridity-encryption-key"
+      WEBHOOK_URL: "http://localhost:5678"
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/workflows
+    depends_on:
+      - postgres
+
+  fraud-detection-api:
+    image: python:3.9-slim
+    working_dir: /app
+    volumes:
+      - ./fraud-detection:/app
+    command: python api.py
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=development
+
+volumes:
+  postgres_data:
+  n8n_data:

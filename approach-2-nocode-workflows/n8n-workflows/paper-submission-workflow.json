@@ -1,0 +1,47 @@
+{
+  "name": "Academic Paper Submission Workflow",
+  "description": "Complete workflow for academic paper submission with fraud detection and blockchain attestation",
+  "nodes": [
+    {
+      "name": "HTTP Trigger",
+      "type": "n8n-nodes-base.httpTrigger",
+      "description": "Receives paper submission from NocoDB interface"
+    },
+    {
+      "name": "Validate Submission",
+      "type": "n8n-nodes-base.function",
+      "description": "Validates required fields and ENS identity"
+    },
+    {
+      "name": "Upload to IPFS",
+      "type": "n8n-nodes-base.httpRequest",
+      "description": "Uploads paper to IPFS via Pinata API"
+    },
+    {
+      "name": "Fraud Detection Analysis", 
+      "type": "n8n-nodes-base.httpRequest",
+      "description": "Runs cross-modal fraud detection on paper content"
+    },
+    {
+      "name": "Create EAS Attestation",
+      "type": "n8n-nodes-base.httpRequest", 
+      "description": "Creates blockchain attestation via EAS API"
+    },
+    {
+      "name": "Update Database",
+      "type": "n8n-nodes-base.postgres",
+      "description": "Records submission in PostgreSQL database"
+    },
+    {
+      "name": "Assign Reviewers",
+      "type": "n8n-nodes-base.function",
+      "description": "Automatically assigns peer reviewers based on expertise"
+    },
+    {
+      "name": "Send Notifications",
+      "type": "n8n-nodes-base.email",
+      "description": "Notifies authors and reviewers of submission status"
+    }
+  ],
+  "specification": "Complete implementation details in /deployment/immediate/workflows/"
+}

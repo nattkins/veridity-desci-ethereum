@@ -1,0 +1,170 @@
+// FraudDetection.pseudocode - Cross-modal academic fraud detection
+CONTRACT FraudDetection {
+    
+    STATE VARIABLES {
+        mapping(bytes32 => FraudAnalysis) analyses;
+        mapping(string => uint256) keywordSentiments;
+        uint256 constant FRAUD_THRESHOLD = 80; // 0-100 scale
+    }
+    
+    STRUCTS {
+        FraudAnalysis {
+            bytes32 paperId;
+            uint256 crossModalScore;
+            uint256 statisticalInconsistency;
+            uint256 textDataMismatch;
+            string[] flaggedSections;
+            uint256 confidence;
+            uint256 timestamp;
+        }
+    }
+    
+    FUNCTIONS {
+        
+        FUNCTION analyzePaper(bytes32 ipfsHash) external returns (uint256 fraudScore) {
+            // Step 1: Extract content from IPFS
+            string memory paperContent = _fetchFromIPFS(ipfsHash);
+            
+            // Step 2: Parse quantitative and qualitative data
+            QuantitativeData memory quantData = _extractQuantitativeData(paperContent);
+            QualitativeData memory qualData = _extractQualitativeData(paperContent);
+            
+            // Step 3: Cross-modal consistency analysis
+            uint256 modalConsistency = _analyzeCrossModalConsistency(quantData, qualData);
+            
+            // Step 4: Statistical anomaly detection
+            uint256 statAnomaly = _detectStatisticalAnomalies(quantData);
+            
+            // Step 5: Text-data alignment verification
+            uint256 textDataAlignment = _verifyTextDataAlignment(quantData, qualData);
+            
+            // Step 6: Calculate composite fraud score
+            fraudScore = _calculateCompositeScore(modalConsistency, statAnomaly, textDataAlignment);
+            
+            // Step 7: Store analysis results
+            bytes32 analysisId = keccak256(abi.encodePacked(ipfsHash, block.timestamp));
+            analyses[analysisId] = FraudAnalysis({
+                paperId: analysisId,
+                crossModalScore: modalConsistency,
+                statisticalInconsistency: statAnomaly,
+                textDataMismatch: textDataAlignment,
+                flaggedSections: _identifyFlaggedSections(quantData, qualData),
+                confidence: _calculateConfidence(modalConsistency, statAnomaly, textDataAlignment),
+                timestamp: block.timestamp
+            });
+            
+            EMIT FraudAnalysisCompleted(analysisId, ipfsHash, fraudScore);
+            
+            RETURN fraudScore;
+        }
+        
+        FUNCTION _analyzeCrossModalConsistency(
+            QuantitativeData memory quantData,
+            QualitativeData memory qualData
+        ) internal pure returns (uint256 inconsistencyScore) {
+            
+            // Francesca Gino-style detection: Compare statistical claims vs results
+            IF (quantData.correlation > 0.7 AND contains(qualData.conclusions, "no significant")) {
+                inconsistencyScore += 60; // Major red flag
+            }
+            
+            IF (quantData.pValue < 0.05 AND contains(qualData.methodology, "exploratory")) {
+                inconsistencyScore += 30; // p-hacking indicator
+            }
+            
+            IF (quantData.sampleSize < 30 AND contains(qualData.claims, "generalizable")) {
+                inconsistencyScore += 40; // Overgeneralization
+            }
+            
+            // Sample size vs effect size consistency
+            uint256 expectedPower = _calculateStatisticalPower(quantData.sampleSize, quantData.effectSize);
+            IF (expectedPower < 0.8 AND contains(qualData.conclusions, "significant effect")) {
+                inconsistencyScore += 50; // Underpowered study claiming significance
+            }
+            
+            RETURN inconsistencyScore > 100 ? 100 : inconsistencyScore;
+        }
+        
+        FUNCTION _detectStatisticalAnomalies(QuantitativeData memory data) internal pure returns (uint256 anomalyScore) {
+            
+            // Perfect correlation detection (Gino case: exactly r=0.87 across studies)
+            IF (data.correlation == 870) { // Stored as integer (0.87 * 1000)
+                anomalyScore += 80; // Extremely suspicious
+            }
+            
+            // Too-perfect p-values (exactly 0.05, 0.01, etc.)
+            IF (data.pValue == 50 OR data.pValue == 10 OR data.pValue == 1) { // Stored as integer (*1000)
+                anomalyScore += 40;
+            }
+            
+            // Impossible precision for sample size
+            IF (data.sampleSize < 100 AND _countDecimalPlaces(data.mean) > 3) {
+                anomalyScore += 30;
+            }
+            
+            // Standard deviation anomalies
+            IF (data.standardDeviation == 0 OR data.standardDeviation > data.mean * 2) {
+                anomalyScore += 35;
+            }
+            
+            RETURN anomalyScore > 100 ? 100 : anomalyScore;
+        }
+        
+        FUNCTION _verifyTextDataAlignment(
+            QuantitativeData memory quantData,
+            QualitativeData memory qualData
+        ) internal pure returns (uint256 mismatchScore) {
+            
+            // Sentiment analysis of conclusions vs statistical results
+            int256 conclusionSentiment = _analyzeSentiment(qualData.conclusions);
+            int256 expectedSentiment = _deriveExpectedSentiment(quantData);
+            
+            uint256 sentimentGap = abs(conclusionSentiment - expectedSentiment);
+            IF (sentimentGap > 50) { // Scale 0-100
+                mismatchScore += sentimentGap;
+            }
+            
+            // Methodology claims vs actual analysis
+            IF (contains(qualData.methodology, "rigorous") AND quantData.sampleSize < 50) {
+                mismatchScore += 40;
+            }
+            
+            IF (contains(qualData.limitations, "none") OR qualData.limitations.length == 0) {
+                mismatchScore += 30; // No limitations claimed - suspicious
+            }
+            
+            RETURN mismatchScore > 100 ? 100 : mismatchScore;
+        }
+        
+        FUNCTION _calculateCompositeScore(
+            uint256 modalConsistency,
+            uint256 statAnomaly, 
+            uint256 textAlignment
+        ) internal pure returns (uint256 compositeScore) {
+            
+            // Weighted composite fraud score
+            compositeScore = (modalConsistency * 40 + statAnomaly * 35 + textAlignment * 25) / 100;
+            
+            // Apply confidence adjustments
+            IF (modalConsistency > 80 AND statAnomaly > 80) {
+                compositeScore = min(compositeScore + 20, 100); // High confidence boost
+            }
+            
+            RETURN compositeScore;
+        }
+        
+        FUNCTION getFraudAnalysis(bytes32 analysisId) external view returns (FraudAnalysis memory) {
+            RETURN analyses[analysisId];
+        }
+        
+        FUNCTION updateFraudThreshold(uint256 newThreshold) external onlyOwner {
+            REQUIRE newThreshold <= 100;
+            FRAUD_THRESHOLD = newThreshold;
+        }
+    }
+    
+    EVENTS {
+        FraudAnalysisCompleted(bytes32 indexed analysisId, bytes32 indexed ipfsHash, uint256 fraudScore);
+        SuspiciousPaperDetected(bytes32 indexed analysisId, uint256 fraudScore, string[] flaggedSections);
+    }
+}

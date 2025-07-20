@@ -1,0 +1,195 @@
+// VeridityCore.pseudocode - Main academic publishing contract
+CONTRACT VeridityCore {
+    
+    STATE VARIABLES {
+        mapping(bytes32 => Paper) papers;
+        mapping(address => Reviewer) reviewers;
+        mapping(bytes32 => Review[]) paperReviews;
+        mapping(address => uint256) reputationScores;
+        
+        ENSDelegation ensRegistry;
+        FraudDetection fraudDetector;
+        USDCPayments paymentProcessor;
+        EASAttestation attestationService;
+    }
+    
+    STRUCTS {
+        Paper {
+            bytes32 ipfsHash;
+            address author;
+            string ensName;
+            uint256 submissionTime;
+            PaperStatus status;
+            uint256 fraudScore;
+            bytes32[] reviewIds;
+        }
+        
+        Reviewer {
+            address wallet;
+            string ensName;
+            uint256 reputationScore;
+            string[] expertiseDomains;
+            bool isActive;
+        }
+        
+        Review {
+            bytes32 paperId;
+            address reviewer;
+            uint8 qualityScore;
+            string comments;
+            bool recommendAcceptance;
+            uint256 completionTime;
+        }
+    }
+    
+    FUNCTIONS {
+        
+        FUNCTION submitPaper(string memory ensName, bytes32 ipfsHash) external {
+            REQUIRE ensRegistry.verifyENSOwnership(msg.sender, ensName);
+            REQUIRE ipfsHash != bytes32(0);
+            
+            bytes32 paperId = keccak256(abi.encodePacked(msg.sender, ipfsHash, block.timestamp));
+            
+            // Run fraud detection
+            uint256 fraudScore = fraudDetector.analyzePaper(ipfsHash);
+            REQUIRE fraudScore < FRAUD_THRESHOLD;
+            
+            papers[paperId] = Paper({
+                ipfsHash: ipfsHash,
+                author: msg.sender,
+                ensName: ensName,
+                submissionTime: block.timestamp,
+                status: PaperStatus.SUBMITTED,
+                fraudScore: fraudScore,
+                reviewIds: new bytes32[](0)
+            });
+            
+            // Create EAS attestation
+            attestationService.createPaperAttestation(paperId, ipfsHash, msg.sender);
+            
+            EMIT PaperSubmitted(paperId, msg.sender, ensName, ipfsHash);
+        }
+        
+        FUNCTION assignReviewers(bytes32 paperId, address[] memory reviewerAddresses) external {
+            REQUIRE papers[paperId].status == PaperStatus.SUBMITTED;
+            REQUIRE hasRole(EDITOR_ROLE, msg.sender);
+            
+            FOR (uint i = 0; i < reviewerAddresses.length; i++) {
+                REQUIRE reviewers[reviewerAddresses[i]].isActive;
+                // Assign review with automatic USDC escrow
+                paymentProcessor.escrowReviewPayment(reviewerAddresses[i], REVIEW_PAYMENT_AMOUNT);
+            }
+            
+            papers[paperId].status = PaperStatus.UNDER_REVIEW;
+            EMIT ReviewersAssigned(paperId, reviewerAddresses);
+        }
+        
+        FUNCTION submitReview(bytes32 paperId, uint8 qualityScore, string memory comments, bool recommend) external {
+            REQUIRE papers[paperId].status == PaperStatus.UNDER_REVIEW;
+            REQUIRE reviewers[msg.sender].isActive;
+            REQUIRE qualityScore >= 1 AND qualityScore <= 10;
+            
+            bytes32 reviewId = keccak256(abi.encodePacked(paperId, msg.sender, block.timestamp));
+            
+            Review memory newReview = Review({
+                paperId: paperId,
+                reviewer: msg.sender,
+                qualityScore: qualityScore,
+                comments: comments,
+                recommendAcceptance: recommend,
+                completionTime: block.timestamp
+            });
+            
+            paperReviews[paperId].push(newReview);
+            papers[paperId].reviewIds.push(reviewId);
+            
+            // Release USDC payment to reviewer
+            paymentProcessor.releaseReviewPayment(msg.sender);
+            
+            // Update reviewer reputation
+            reputationScores[msg.sender] += REVIEW_REPUTATION_BONUS;
+            
+            // Create EAS review attestation
+            attestationService.createReviewAttestation(reviewId, paperId, msg.sender, qualityScore);
+            
+            EMIT ReviewSubmitted(reviewId, paperId, msg.sender, qualityScore);
+            
+            // Check if all reviews completed
+            IF (paperReviews[paperId].length >= REQUIRED_REVIEWS) {
+                _finalizePaper(paperId);
+            }
+        }
+        
+        FUNCTION _finalizePaper(bytes32 paperId) internal {
+            Review[] memory reviews = paperReviews[paperId];
+            uint256 totalScore = 0;
+            uint256 acceptanceCount = 0;
+            
+            FOR (uint i = 0; i < reviews.length; i++) {
+                totalScore += reviews[i].qualityScore;
+                IF (reviews[i].recommendAcceptance) {
+                    acceptanceCount++;
+                }
+            }
+            
+            uint256 averageScore = totalScore / reviews.length;
+            bool shouldAccept = acceptanceCount >= (reviews.length / 2);
+            
+            IF (shouldAccept AND averageScore >= ACCEPTANCE_THRESHOLD) {
+                papers[paperId].status = PaperStatus.ACCEPTED;
+                // Bonus payment to author
+                paymentProcessor.payAuthorBonus(papers[paperId].author, AUTHOR_BONUS_AMOUNT);
+            } ELSE {
+                papers[paperId].status = PaperStatus.REJECTED;
+            }
+            
+            // Create final EAS attestation
+            attestationService.createFinalAttestation(paperId, papers[paperId].status, averageScore);
+            
+            EMIT PaperFinalized(paperId, papers[paperId].status, averageScore);
+        }
+        
+        FUNCTION registerReviewer(string memory ensName, string[] memory expertiseDomains) external {
+            REQUIRE ensRegistry.verifyENSOwnership(msg.sender, ensName);
+            REQUIRE expertiseDomains.length > 0;
+            
+            reviewers[msg.sender] = Reviewer({
+                wallet: msg.sender,
+                ensName: ensName,
+                reputationScore: INITIAL_REPUTATION,
+                expertiseDomains: expertiseDomains,
+                isActive: true
+            });
+            
+            EMIT ReviewerRegistered(msg.sender, ensName, expertiseDomains);
+        }
+        
+        FUNCTION getFraudScore(bytes32 paperId) external view returns (uint256) {
+            RETURN papers[paperId].fraudScore;
+        }
+        
+        FUNCTION getPaperReviews(bytes32 paperId) external view returns (Review[] memory) {
+            RETURN paperReviews[paperId];
+        }
+    }
+    
+    EVENTS {
+        PaperSubmitted(bytes32 indexed paperId, address indexed author, string ensName, bytes32 ipfsHash);
+        ReviewersAssigned(bytes32 indexed paperId, address[] reviewers);
+        ReviewSubmitted(bytes32 indexed reviewId, bytes32 indexed paperId, address indexed reviewer, uint8 score);
+        PaperFinalized(bytes32 indexed paperId, PaperStatus status, uint256 averageScore);
+        ReviewerRegistered(address indexed reviewer, string ensName, string[] expertiseDomains);
+    }
+    
+    MODIFIERS {
+        onlyActiveReviewer() {
+            REQUIRE reviewers[msg.sender].isActive;
+            _;
+        }
+        
+        onlyPaperAuthor(bytes32 paperId) {
+            REQUIRE papers[paperId].author == msg.sender;
+            _;
+        }
+    }
+}
